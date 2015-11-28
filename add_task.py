@@ -4,21 +4,6 @@ import os
 import scinetutil
 
 def create_table(cursor):
-  query = '''CREATE TABLE IF NOT EXISTS tasks (
-    id SERIAL PRIMARY KEY NOT NULL,
-    command TEXT NOT NULL,
-    batch_name TEXT NOT NULL,
-    priority INT,
-    run_dir TEXT NOT NULL,
-    retval INT,
-    hostname TEXT,
-    times_failed INT DEFAULT 0 NOT NULL,
-    times_interrupted INT DEFAULT 0 NOT NULL,
-    started_at TIMESTAMPTZ,
-    finished_at TIMESTAMPTZ
-  )'''
-  cursor.execute(query)
-
   query = '''CREATE TABLE IF NOT EXISTS nodes (
     id SERIAL PRIMARY KEY NOT NULL,
     hostname TEXT NOT NULL,
@@ -33,8 +18,24 @@ def create_table(cursor):
     load_avg_15min REAL,
     cpu_usage REAL,
     num_tasks INT,
-    started_at TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL,
     last_updated TIMESTAMPTZ NOT NULL
+  )'''
+  cursor.execute(query)
+
+  query = '''CREATE TABLE IF NOT EXISTS tasks (
+    id SERIAL PRIMARY KEY NOT NULL,
+    node_id INT REFERENCES nodes (id),
+    command TEXT NOT NULL,
+    batch_name TEXT NOT NULL,
+    priority INT,
+    run_dir TEXT NOT NULL,
+    retval INT,
+    hostname TEXT,
+    times_failed INT DEFAULT 0 NOT NULL,
+    times_interrupted INT DEFAULT 0 NOT NULL,
+    started_at TIMESTAMPTZ,
+    finished_at TIMESTAMPTZ
   )'''
   cursor.execute(query)
 

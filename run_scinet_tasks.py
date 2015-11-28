@@ -31,41 +31,40 @@ class ScinetRunner(object):
 
     with open(stdout_path, 'w') as stdout:
       with open(stderr_path, 'w') as stderr:
-        process = subprocess.Popen(command, stdout=stdout, stderr=stderr, cwd=rundir, shell=True)
+        process = subprocess.Popen(command, stdout=stdout, stderr=stderr, cwd=rundir, shell=True, executable='/bin/bash')
     return process
 
   def _mark_started(self, task_id, trx):
-    logmsg('starting\ttask=%s' % task_id)
+    logmsg('starting task=%s' % task_id)
 
     query = '''
       UPDATE tasks SET
-        hostname = NULL,
+        node_id = %s,
         started_at = NOW()
       WHERE id = %s
     '''
 
-    hostname = socket.gethostname()
-    return trx.execute(query, (task_id,))
+    return trx.execute(query, (self._node_id, task_id))
 
   def _mark_interrupted(self, task_id, trx):
-    logmsg('stopped\ttask=%s' % task_id)
+    logmsg('stopped task=%s' % task_id)
 
     query = '''
       UPDATE tasks SET
-        times_interrupted = times_interrupted + 1,
-        hostname = NULL
+        node_id = NULL,
+        times_interrupted = times_interrupted + 1
       WHERE id = %s
     '''
 
     return trx.execute(query, (task_id,))
 
   def _mark_finished(self, task_id, retval, trx):
-    logmsg('finished\ttask=%s\tretval=%s' % (task_id, retval))
+    logmsg('finished task=%s retval=%s' % (task_id, retval))
 
     query = '''
       UPDATE tasks SET
         retval = %s,
-        hostname = %s,
+        node_id = NULL,
     '''
     if retval != 0:
       query += 'times_failed = times_failed + 1,'
@@ -74,8 +73,7 @@ class ScinetRunner(object):
       WHERE id = %s
     '''
 
-    hostname = socket.gethostname()
-    return trx.execute(query, (retval, hostname, task_id))
+    return trx.execute(query, (retval, task_id))
 
   def _update_finished_tasks(self, trx):
     for task_id, process in self._processes.items():
@@ -134,7 +132,7 @@ class ScinetRunner(object):
             job_id,
             physical_cpus,
             logical_cpus,
-            started_at,
+            created_at,
             last_updated
           ) VALUES (%s, %s, %s, %s, %s, NOW(), NOW())
           RETURNING id
