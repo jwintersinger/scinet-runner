@@ -1,0 +1,11 @@
+with open('/bg01/homescinet/q/qmorris/jawinter/work/exultant-pistachio/data/misc/postgres-hostname.txt') as pghostf:
+  hostname = pghostf.read().strip()
+
+CONFIG = {
+  'db_username': 'username',
+  'db_password': 'password',
+  'db_host': 'localhost',
+  'db_port': 5432,
+  'db_name': 'scinet_tasks',
+  'std_streams_path': '/bg01/homescinet/q/qmorris/jawinter/work/exultant-pistachio/data/misc/scinet_tasks'
+}
