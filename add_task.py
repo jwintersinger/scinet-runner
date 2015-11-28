@@ -1,4 +1,5 @@
 #!/usr/bin/env python2
+import sys
 import argparse
 import os
 import scinetutil
@@ -53,8 +54,6 @@ def main():
   )
   parser.add_argument('-p', '--priority', dest='priority', type=int,
     help='Priority for dataset (lower = higher priority)')
-  parser.add_argument('command',
-    help='Shell command')
   parser.add_argument('batch_name',
     help='Batch name')
   parser.add_argument('run_dir',
@@ -64,7 +63,11 @@ def main():
   conn = scinetutil.db_connect()
   cursor = conn.cursor()
   create_table(cursor)
-  add_task(cursor, args.command, args.batch_name, args.run_dir, args.priority)
+
+  for command in sys.stdin:
+    command = command.strip()
+    add_task(cursor, command, args.batch_name, args.run_dir, args.priority)
+
   conn.commit()
   conn.close()
 
