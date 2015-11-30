@@ -2,7 +2,6 @@
 import argparse
 import os
 import psutil
-import psycopg2
 import signal
 import socket
 import subprocess
@@ -10,15 +9,20 @@ import sys
 import threading
 import time
 import traceback
-from datetime import datetime
 import scinetutil
 from config import CONFIG
+import cProfile
+import os
+
+logmsg = scinetutil.logmsg
 
 class ScinetRunner(object):
   def __init__(self, must_exit):
     self._must_exit = must_exit
     self._processes = {}
+    logmsg('Connecting ...')
     self._conn = scinetutil.DbConnManager()
+    logmsg('Connected.')
 
   def _launch_task(self, task_id, command, rundir):
     if not os.path.exists(rundir):
@@ -85,90 +89,67 @@ class ScinetRunner(object):
         del self._processes[task_id]
         finished.append(task_id)
 
-    while True:
-      try:
-        with scinetutil.transaction(self._conn, True) as trx:
-          for task_id in finished:
-            self._mark_finished(task_id, retval, trx)
-        break
-      except psycopg2.OperationalError:
-        traceback.print_exc()
-        self._op_error_occurred()
+    if len(finished) > 0:
+      with scinetutil.transaction(self._conn, self._must_exit, True) as trx:
+        for task_id in finished:
+          self._mark_finished(task_id, retval, trx)
 
   def _launch_new_tasks(self, num_concurrent_tasks):
     num_to_launch = num_concurrent_tasks - len(self._processes)
     if num_to_launch <= 0:
       return
 
-    while True:
-      try:
-        with scinetutil.transaction(self._conn, True) as trx:
-          # By default, NULLs get sorted *after* non-null values, which is what we
-          # want when sorting on priority -- *any* priority value is treated as more
-          # important than no priority value.
-          query = '''
-            SELECT id, command, run_dir
-            FROM tasks
-            WHERE
-              started_at IS NULL AND
-              times_failed = 0 AND
-              times_interrupted = 0
-            ORDER BY priority, batch_name
-            LIMIT %s
-          '''
-          trx.execute(query, (num_to_launch,))
-          results = trx.fetchall()
-          if len(results) == 0:
-            return
+    with scinetutil.transaction(self._conn, self._must_exit, True) as trx:
+      # By default, NULLs get sorted *after* non-null values, which is what we
+      # want when sorting on priority -- *any* priority value is treated as more
+      # important than no priority value.
+      query = '''
+        SELECT id, command, run_dir
+        FROM tasks
+        WHERE
+          started_at IS NULL AND
+          times_failed = 0 AND
+          times_interrupted = 0
+        ORDER BY priority, batch_name
+        LIMIT %s
+      '''
+      trx.execute(query, (num_to_launch,))
+      results = trx.fetchall()
+      if len(results) == 0:
+        return
 
-          for task_id, command, run_dir in results:
-            process = self._launch_task(task_id, command, run_dir)
-            self._processes[task_id] = process
-            self._mark_started(task_id, trx)
-        break
-      except psycopg2.OperationalError:
-        traceback.print_exc()
-        self._op_error_occurred()
-
-  def _op_error_occurred(self):
-    delay = 3
-    logmsg('OperationalError occurred. Trying again in %s s ...' % delay, sys.stderr)
-    time.sleep(delay)
+      for task_id, command, run_dir in results:
+        process = self._launch_task(task_id, command, run_dir)
+        self._processes[task_id] = process
+        self._mark_started(task_id, trx)
 
   def _insert_node_status(self):
-    while True:
-      try:
-        with scinetutil.transaction(self._conn, False) as trx:
-          if 'PBS_JOBID' in os.environ:
-            job_id = os.environ['PBS_JOBID']
-          else:
-            job_id = None
+    if 'PBS_JOBID' in os.environ:
+      job_id = os.environ['PBS_JOBID']
+    else:
+      job_id = None
+    with scinetutil.transaction(self._conn, self._must_exit, False) as trx:
+      query = '''INSERT INTO nodes (
+        hostname,
+        process_id,
+        job_id,
+        physical_cpus,
+        logical_cpus,
+        created_at,
+        last_updated
+      ) VALUES (%s, %s, %s, %s, %s, NOW(), NOW())
+      RETURNING id
+      '''
+      trx.execute(query, (
+        socket.gethostname(),
+        os.getpid(),
+        job_id,
+        psutil.cpu_count(logical=False),
+        psutil.cpu_count(logical=True),
+      ))
 
-          query = '''INSERT INTO nodes (
-            hostname,
-            process_id,
-            job_id,
-            physical_cpus,
-            logical_cpus,
-            created_at,
-            last_updated
-          ) VALUES (%s, %s, %s, %s, %s, NOW(), NOW())
-          RETURNING id
-        '''
-        trx.execute(query, (
-          socket.gethostname(),
-          os.getpid(),
-          job_id,
-          psutil.cpu_count(logical=False),
-          psutil.cpu_count(logical=True),
-        ))
-
-        node_id = trx.fetchone()[0]
-        return node_id
-
-      except psycopg2.OperationalError:
-        traceback.print_exc()
-        self._op_error_occurred()
+      node_id = trx.fetchone()[0]
+    return node_id
 
   def _update_node_status(self):
     query = '''UPDATE nodes SET
@@ -183,25 +164,19 @@ class ScinetRunner(object):
       WHERE id = %s
     '''
 
-    while True:
-      try:
-        load_avg = os.getloadavg()
-        mem_usage = psutil.virtual_memory()
-        with scinetutil.transaction(self._conn, False) as trx:
-          trx.execute(query, (
-            load_avg[0],
-            load_avg[1],
-            load_avg[2],
-            psutil.cpu_percent(interval=0.5),
-            mem_usage.available,
-            mem_usage.total - mem_usage.available,
-            len(self._processes),
-            self._node_id
-          ))
-        break
-      except psycopg2.OperationalError:
-        traceback.print_exc()
-        self._op_error_occurred()
+    load_avg = os.getloadavg()
+    mem_usage = psutil.virtual_memory()
+    with scinetutil.transaction(self._conn, self._must_exit, False) as trx:
+      trx.execute(query, (
+        load_avg[0],
+        load_avg[1],
+        load_avg[2],
+        psutil.cpu_percent(interval=0.5),
+        mem_usage.available,
+        mem_usage.total - mem_usage.available,
+        len(self._processes),
+        self._node_id
+      ))
 
   def _delete_node_status(self, trx):
     query = 'DELETE FROM nodes WHERE id = %s'
@@ -210,6 +185,7 @@ class ScinetRunner(object):
   def start_tasks(self, num_concurrent_tasks):
     iteration = 0
     self._node_id = self._insert_node_status()
+    logmsg('Inserted node status')
 
     while True:
       self._update_finished_tasks()
@@ -243,25 +219,16 @@ class ScinetRunner(object):
       process.terminate()
       terminated_ids.append(task_id)
 
-    while True:
-      try:
-        with scinetutil.transaction(self._conn, True) as trx:
-          for task_id in terminated_ids:
-            self._mark_interrupted(task_id, trx)
-        with scinetutil.transaction(self._conn, False) as trx:
-          self._delete_node_status(trx)
-        self._conn.close()
-        break
-      except psycopg2.OperationalError:
-        traceback.print_exc()
-        self._op_error_occurred()
+    with scinetutil.transaction(self._conn, self._must_exit, True) as trx:
+      for task_id in terminated_ids:
+        self._mark_interrupted(task_id, trx)
+    with scinetutil.transaction(self._conn, self._must_exit, False) as trx:
+      self._delete_node_status(trx)
+    self._conn.close()
 
     logmsg('Sleeping before exit ...')
     time.sleep(3)
     logmsg('Waking before exit ...')
-
-def logmsg(msg, fd=sys.stdout):
-  print >> fd, '[%s] %s' % (datetime.now(), msg)
 
 def run(must_exit):
   parser = argparse.ArgumentParser(
@@ -272,8 +239,11 @@ def run(must_exit):
     help='Number of concurrent tasks to run')
   args = parser.parse_args()
 
-  scinetr = ScinetRunner(must_exit)
-  scinetr.start_tasks(args.concurrent)
+  _run = lambda: ScinetRunner(must_exit).start_tasks(sargs.concurrent)
+  if 'PROFILE' in os.environ and os.environ['PROFILE'] == '1':
+    cProfile.runctx('_run()', globals=globals(), locals=locals(), filename='lol.prof')
+  else:
+    _run()
 
 def main():
   must_exit = threading.Event()
@@ -296,8 +266,10 @@ def main():
 
   if must_exit.set():
     # Exit with non-zero to indicate run didn't finish.
+    logmsg('must_exit is set.')
     sys.exit(3)
   else:
+    logmsg('Finished. Exiting.')
     sys.exit()
 
 if __name__ == '__main__':
