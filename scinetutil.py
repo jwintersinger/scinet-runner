@@ -44,6 +44,10 @@ def transaction(conn_manager, lock_tasks):
       if lock_tasks:
         cursor.execute('LOCK TABLE tasks IN ACCESS EXCLUSIVE MODE')
     except psycopg2.OperationalError as opperr:
+      try:
+        cursor.execute('COMMIT')
+      except psycopg2.OperationalError as opperr_inner:
+        pass
       delay = 3
       traceback.print_exc()
       print >> sys.stderr, 'OperationalError occurred. Trying again in %s s ...' % delay

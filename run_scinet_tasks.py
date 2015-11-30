@@ -75,42 +75,60 @@ class ScinetRunner(object):
 
     return trx.execute(query, (retval, task_id))
 
-  def _update_finished_tasks(self, trx):
+  def _update_finished_tasks(self):
+    finished = []
     for task_id, process in self._processes.items():
       retval = process.poll()
       if retval is None: # Process still running
         continue
       else:
         del self._processes[task_id]
-        self._mark_finished(task_id, retval, trx)
+        finished.append(task_id)
 
-  def _launch_new_tasks(self, num_concurrent_tasks, trx):
+    while True:
+      try:
+        with scinetutil.transaction(self._conn, True) as trx:
+          for task_id in finished:
+            self._mark_finished(task_id, retval, trx)
+        break
+      except psycopg2.OperationalError:
+        traceback.print_exc()
+        self._op_error_occurred()
+
+  def _launch_new_tasks(self, num_concurrent_tasks):
     num_to_launch = num_concurrent_tasks - len(self._processes)
     if num_to_launch <= 0:
       return
 
-    # By default, NULLs get sorted *after* non-null values, which is what we
-    # want when sorting on priority -- *any* priority value is treated as more
-    # important than no priority value.
-    query = '''
-      SELECT id, command, run_dir
-      FROM tasks
-      WHERE
-        started_at IS NULL AND
-        times_failed = 0 AND
-        times_interrupted = 0
-      ORDER BY priority, batch_name
-      LIMIT %s
-    '''
-    trx.execute(query, (num_to_launch,))
-    results = trx.fetchall()
-    if len(results) == 0:
-      return
+    while True:
+      try:
+        with scinetutil.transaction(self._conn, True) as trx:
+          # By default, NULLs get sorted *after* non-null values, which is what we
+          # want when sorting on priority -- *any* priority value is treated as more
+          # important than no priority value.
+          query = '''
+            SELECT id, command, run_dir
+            FROM tasks
+            WHERE
+              started_at IS NULL AND
+              times_failed = 0 AND
+              times_interrupted = 0
+            ORDER BY priority, batch_name
+            LIMIT %s
+          '''
+          trx.execute(query, (num_to_launch,))
+          results = trx.fetchall()
+          if len(results) == 0:
+            return
 
-    for task_id, command, run_dir in results:
-      process = self._launch_task(task_id, command, run_dir)
-      self._processes[task_id] = process
-      self._mark_started(task_id, trx)
+          for task_id, command, run_dir in results:
+            process = self._launch_task(task_id, command, run_dir)
+            self._processes[task_id] = process
+            self._mark_started(task_id, trx)
+        break
+      except psycopg2.OperationalError:
+        traceback.print_exc()
+        self._op_error_occurred()
 
   def _op_error_occurred(self):
     delay = 3
@@ -152,7 +170,7 @@ class ScinetRunner(object):
         traceback.print_exc()
         self._op_error_occurred()
 
-  def _update_node_status(self, trx):
+  def _update_node_status(self):
     query = '''UPDATE nodes SET
       load_avg_1min = %s,
       load_avg_5min = %s,
@@ -164,19 +182,26 @@ class ScinetRunner(object):
       last_updated = NOW()
       WHERE id = %s
     '''
-    load_avg = os.getloadavg()
-    mem_usage = psutil.virtual_memory()
 
-    trx.execute(query, (
-      load_avg[0],
-      load_avg[1],
-      load_avg[2],
-      psutil.cpu_percent(interval=0.5),
-      mem_usage.available,
-      mem_usage.total - mem_usage.available,
-      len(self._processes),
-      self._node_id
-    ))
+    while True:
+      try:
+        load_avg = os.getloadavg()
+        mem_usage = psutil.virtual_memory()
+        with scinetutil.transaction(self._conn, False) as trx:
+          trx.execute(query, (
+            load_avg[0],
+            load_avg[1],
+            load_avg[2],
+            psutil.cpu_percent(interval=0.5),
+            mem_usage.available,
+            mem_usage.total - mem_usage.available,
+            len(self._processes),
+            self._node_id
+          ))
+        break
+      except psycopg2.OperationalError:
+        traceback.print_exc()
+        self._op_error_occurred()
 
   def _delete_node_status(self, trx):
     query = 'DELETE FROM nodes WHERE id = %s'
@@ -187,19 +212,15 @@ class ScinetRunner(object):
     self._node_id = self._insert_node_status()
 
     while True:
-      try:
-        with scinetutil.transaction(self._conn, True) as trx:
-          self._update_finished_tasks(trx)
-          self._launch_new_tasks(num_concurrent_tasks, trx)
-          # Periodically update status.
-          # This works out to every 600 s.
-        if iteration % 120 == 0:
-          with scinetutil.transaction(self._conn, False) as trx:
-            self._update_node_status(trx)
-      except psycopg2.OperationalError:
-        traceback.print_exc()
-        self._op_error_occurred()
-        continue
+      self._update_finished_tasks()
+      self._launch_new_tasks(num_concurrent_tasks)
+      #logmsg('tick')
+
+      # Periodically update status.
+      # This works out to every 600 s.
+      if iteration % 120 == 0:
+        #logmsg('Updating node status')
+        self._update_node_status()
 
       if len(self._processes) == 0:
         logmsg('All tasks finished.')
