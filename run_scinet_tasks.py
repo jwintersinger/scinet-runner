@@ -87,11 +87,11 @@ class ScinetRunner(object):
         continue
       else:
         del self._processes[task_id]
-        finished.append(task_id)
+        finished.append((task_id, retval))
 
     if len(finished) > 0:
       with scinetutil.transaction(self._conn, self._must_exit, True) as trx:
-        for task_id in finished:
+        for task_id, retval in finished:
           self._mark_finished(task_id, retval, trx)
 
   def _launch_new_tasks(self, num_concurrent_tasks):
