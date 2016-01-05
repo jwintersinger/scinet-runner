@@ -239,7 +239,7 @@ def run(must_exit):
     help='Number of concurrent tasks to run')
   args = parser.parse_args()
 
-  _run = lambda: ScinetRunner(must_exit).start_tasks(sargs.concurrent)
+  _run = lambda: ScinetRunner(must_exit).start_tasks(args.concurrent)
   if 'PROFILE' in os.environ and os.environ['PROFILE'] == '1':
     cProfile.runctx('_run()', globals=globals(), locals=locals(), filename='lol.prof')
   else:
