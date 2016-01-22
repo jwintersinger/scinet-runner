@@ -26,6 +26,7 @@ def create_table(cursor):
 
   query = '''CREATE TABLE IF NOT EXISTS tasks (
     id SERIAL PRIMARY KEY NOT NULL,
+    is_active BOOLEAN DEFAULT TRUE NOT NULL,
     node_id INT REFERENCES nodes (id),
     command TEXT NOT NULL,
     batch_name TEXT NOT NULL,

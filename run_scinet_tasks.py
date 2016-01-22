@@ -107,6 +107,7 @@ class ScinetRunner(object):
         SELECT id, command, run_dir
         FROM tasks
         WHERE
+          is_active = TRUE AND
           started_at IS NULL AND
           times_failed = 0 AND
           times_interrupted = 0
