@@ -43,7 +43,7 @@ def transaction(conn_manager, must_exit, lock_tasks):
   must_reconnect = False
   delay = 2
   times_failed = 0
-  max_times_to_fail = 10
+  max_times_to_fail = 50
 
   while True:
     if must_exit.is_set():
